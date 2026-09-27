@@ -203,54 +203,68 @@ async def world_status(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
-# 定期監視処理1（5分おき：通信障害）
+# 定期監視処理1（1分おき：通信障害）
 # ==========================================
-@tasks.loop(minutes=5) # ここは必ず5分以上にしてください！
+@tasks.loop(minutes=1)
 async def check_status():
+    # タイムアウトを10秒に設定
+    timeout_settings = aiohttp.ClientTimeout(total=10)
+    
     global last_statuses
     services = [
         {"name": "VRChat", "key": "vrchat", "url": "https://status.vrchat.com/api/v2/status.json"},
         {"name": "Discord", "key": "discord", "url": "https://discordstatus.com/api/v2/status.json"}
     ]
-    async with aiohttp.ClientSession() as session:
+    
+    # Sessionにタイムアウトとヘッダーを一括設定
+    async with aiohttp.ClientSession(timeout=timeout_settings, headers=custom_headers) as session:
         for svc in services:
-            if not target_channels[svc["key"]]:
+            if not target_channels.get(svc["key"]): # get()を使うとエラー防止に少し安全です
                 continue
             try:
                 async with session.get(svc["url"]) as response:
                     if response.status == 200:
                         data = await response.json()
                         current_status = data['status']['indicator']
+                        
                         if current_status != "none" and current_status != last_statuses[svc["key"]]:
                             for ch_id in target_channels[svc["key"]]:
                                 channel = client.get_channel(ch_id)
                                 if channel:
                                     await channel.send(f"⚠️ **{svc['name']} 通信障害の可能性**\n{data['status']['description']}\n詳細: https://status.{svc['key']}.com/")
+                        
                         elif current_status == "none" and last_statuses[svc["key"]] != "none":
                             for ch_id in target_channels[svc["key"]]:
                                 channel = client.get_channel(ch_id)
                                 if channel:
                                     await channel.send(f"✅ **{svc['name']} 通信障害復旧**\nシステムは正常に稼働しています。")
+                        
                         last_statuses[svc["key"]] = current_status
-            except Exception:
+            except Exception as e:
+                # エラー時はスキップ（次の1分後のループまで待機＝クールダウン）
+                # print(f"[{svc['name']}] Status API Error: {e}") # テスト時のみ有効化するとエラー原因が分かって便利です
                 pass
 
 # ==========================================
 # 定期監視処理2（5分おき：ワールド更新）
 # ==========================================
-@tasks.loop(minutes=5) # ここは必ず5分以上にしてください！
+@tasks.loop(minutes=5)
 async def check_worlds():
     if not target_channels.get("world"):
         return
 
     headers = {"User-Agent": "VRCFNetLWDetector(Bot)/1.0"}
     params = {"apiKey": "JlE5Jldo5Jibnk5O5hTx6XVqsJu4WJ26"}
+    
+    # タイムアウトの設定（10秒）を作成
+    timeout_settings = aiohttp.ClientTimeout(total=10)
 
-    async with aiohttp.ClientSession() as session:
-        # AVAILABLE_WORLDSに登録されている全てのワールドを順番にチェック
+    # Sessionにタイムアウトを適用
+    async with aiohttp.ClientSession(timeout=timeout_settings) as session:
         for world_name, world_id in AVAILABLE_WORLDS.items():
             url = f"https://api.vrchat.cloud/api/1/worlds/{world_id}"
             try:
+                # ここは変更なし
                 async with session.get(url, headers=headers, params=params) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -266,12 +280,11 @@ async def check_worlds():
                             worlds_data[world_id] = current_updated_at
                             save_worlds_data(worlds_data)
                             
-                            # そのワールドを「通知対象」にしているチャンネルだけに送る
                             for ch_id_str, watched_worlds in target_channels["world"].items():
                                 if world_id in watched_worlds:
                                     channel = client.get_channel(int(ch_id_str))
                                     if channel:
-                                        jst_time = convert_to_jst(current_updated_at) # 日本時間に変換
+                                        jst_time = convert_to_jst(current_updated_at)
                                         embed = discord.Embed(
                                             title="🎉 ワールド更新通知",
                                             description=f"**{data.get('name')}** がアップデートされました！",
@@ -284,8 +297,10 @@ async def check_worlds():
                                         await channel.send(embed=embed)
 
             except Exception as e:
+                # タイムアウト等でエラーになってもここでキャッチされる
                 print(f"ワールド確認エラー: {e}")
             
-            await asyncio.sleep(5) # ここは絶対にいじらないでください！(API制限回避のための5秒間隔)
+            # 安全装置はエラー時で必ず5秒待ってから次へ行く
+            await asyncio.sleep(5)
 
 client.run(BOT_TOKEN)
