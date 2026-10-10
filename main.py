@@ -207,8 +207,11 @@ async def world_status(interaction: discord.Interaction):
 # ==========================================
 @tasks.loop(minutes=1)
 async def check_status():
-    # タイムアウトを10秒に設定
+    # ★追加：BotがDiscordのデータを完全に読み込み終わるまで待機する
+    await client.wait_until_ready()
+    
     timeout_settings = aiohttp.ClientTimeout(total=10)
+    custom_headers = {"User-Agent": "XXXXXXXXXXX"}
     
     global last_statuses
     services = [
@@ -216,10 +219,9 @@ async def check_status():
         {"name": "Discord", "key": "discord", "url": "https://discordstatus.com/api/v2/status.json"}
     ]
     
-    # Sessionにタイムアウトとヘッダーを一括設定
     async with aiohttp.ClientSession(timeout=timeout_settings, headers=custom_headers) as session:
         for svc in services:
-            if not target_channels.get(svc["key"]): # get()を使うとエラー防止に少し安全です
+            if not target_channels.get(svc["key"]):
                 continue
             try:
                 async with session.get(svc["url"]) as response:
@@ -227,23 +229,30 @@ async def check_status():
                         data = await response.json()
                         current_status = data['status']['indicator']
                         
+                        print(f"[{svc['name']}] 取得ステータス: {current_status} / 前回: {last_statuses.get(svc['key'])}")
+                        
                         if current_status != "none" and current_status != last_statuses[svc["key"]]:
+                            print(f"[{svc['name']}] 🚨 状態が変化しました！Discordへ通知を送信します。")
                             for ch_id in target_channels[svc["key"]]:
-                                channel = client.get_channel(ch_id)
+                                # ★修正：念のため確実に整数(int)にしてからチャンネルを探す
+                                channel = client.get_channel(int(ch_id))
                                 if channel:
                                     await channel.send(f"⚠️ **{svc['name']} 通信障害の可能性**\n{data['status']['description']}\n詳細: https://status.{svc['key']}.com/")
+                                else:
+                                    print(f"エラー: チャンネルID {ch_id} が見つかりません (None)")
                         
                         elif current_status == "none" and last_statuses[svc["key"]] != "none":
+                            print(f"[{svc['name']}] ✅ 復旧しました！Discordへ通知を送信します。")
                             for ch_id in target_channels[svc["key"]]:
-                                channel = client.get_channel(ch_id)
+                                # ★修正：念のため確実に整数(int)にしてからチャンネルを探す
+                                channel = client.get_channel(int(ch_id))
                                 if channel:
                                     await channel.send(f"✅ **{svc['name']} 通信障害復旧**\nシステムは正常に稼働しています。")
                         
                         last_statuses[svc["key"]] = current_status
             except Exception as e:
-                # エラー時はスキップ（次の1分後のループまで待機＝クールダウン）
-                # print(f"[{svc['name']}] Status API Error: {e}") # テスト時のみ有効化するとエラー原因が分かって便利です
-                pass
+                print(f"[{svc['name']}] 通信・処理エラー: {e}")
+
 
 # ==========================================
 # 定期監視処理2（5分おき：ワールド更新）
@@ -253,7 +262,7 @@ async def check_worlds():
     if not target_channels.get("world"):
         return
 
-    headers = {"User-Agent": "VRCFNetLWDetector(Bot)/1.0"}
+    headers = {"User-Agent": "XXXXXXXXXXX"}
     params = {"apiKey": "JlE5Jldo5Jibnk5O5hTx6XVqsJu4WJ26"}
     
     # タイムアウトの設定（10秒）を作成
